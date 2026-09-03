@@ -4,7 +4,23 @@ use std::sync::mpsc::Sender;
 pub const GITHUB_RELEASE_URL: &str =
     "https://api.github.com/repos/TrulyScarlet/Epod/releases/tags/nightly";
 pub const CURRENT_COMMIT_SHA: &str = env!("EPOD_COMMIT_SHA");
-pub const ASSET_NAME: &str = "epod-x86_64-pc-windows-msvc.zip";
+
+pub fn get_target_asset_name() -> Result<&'static str, &'static str> {
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    return Ok("epod-x86_64-pc-windows-msvc.zip");
+
+    #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
+    return Ok("epod-x86_64-apple-darwin.zip");
+
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    return Ok("epod-aarch64-apple-darwin.zip");
+
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    return Ok("epod-x86_64-unknown-linux-gnu.zip");
+
+    #[allow(unreachable_code)]
+    Err("Unsupported OS or CPU architecture for automated updates")
+}
 
 #[allow(dead_code)]
 #[derive(serde::Deserialize, Debug, Clone)]
@@ -38,6 +54,7 @@ pub enum UpdateStatus {
 }
 
 pub fn check_for_updates() -> Result<UpdateStatus, Box<dyn std::error::Error + Send + Sync>> {
+    let target_asset_name = get_target_asset_name()?;
     let resp: GithubRelease = ureq::get(GITHUB_RELEASE_URL)
         .set("User-Agent", "Epod-Updater")
         .call()?
@@ -46,8 +63,8 @@ pub fn check_for_updates() -> Result<UpdateStatus, Box<dyn std::error::Error + S
     let asset = resp
         .assets
         .iter()
-        .find(|a| a.name == ASSET_NAME)
-        .ok_or_else(|| format!("Asset '{}' not found in nightly release", ASSET_NAME))?;
+        .find(|a| a.name == target_asset_name)
+        .ok_or_else(|| format!("Asset '{}' not found in nightly release", target_asset_name))?;
 
     let remote_sha = resp.target_commitish.trim().to_string();
     let current_sha = CURRENT_COMMIT_SHA.trim();
@@ -110,17 +127,19 @@ pub fn download_and_apply_update(
     for i in 0..archive.len() {
         let file = archive.by_index(i)?;
         let name = file.name().to_lowercase();
-        if name == "epod.exe"
-            || name == "epod"
+        if name == "epod"
+            || name == "epod.exe"
+            || name.ends_with("/epod")
             || name.ends_with("/epod.exe")
             || name.ends_with("\\epod.exe")
+            || name.ends_with("\\epod")
         {
             exe_index = Some(i);
             break;
         }
     }
 
-    let exe_index = exe_index.ok_or("Binary 'epod.exe' not found inside update archive")?;
+    let exe_index = exe_index.ok_or("Binary 'epod' or 'epod.exe' not found inside update archive")?;
     let mut exe_file = archive.by_index(exe_index)?;
 
     let current_exe = std::env::current_exe()?;
@@ -133,6 +152,13 @@ pub fn download_and_apply_update(
         let mut staged_file = std::fs::File::create(&staged_exe_path)?;
         std::io::copy(&mut exe_file, &mut staged_file)?;
         staged_file.sync_all()?;
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let permissions = std::fs::Permissions::from_mode(0o755);
+            std::fs::set_permissions(&staged_exe_path, permissions)?;
+        }
     }
 
     let replace_res = self_replace::self_replace(&staged_exe_path);

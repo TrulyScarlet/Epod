@@ -8,18 +8,33 @@ struct EpodApp {
     update_status: UpdateStatus,
     update_tx: Sender<UpdateStatus>,
     update_rx: Receiver<UpdateStatus>,
+    icon_texture: egui::TextureHandle,
 }
 
 impl EpodApp {
-    fn new(_cc: &eframe::CreationContext<'_>) -> Self {
+    fn new(cc: &eframe::CreationContext<'_>) -> Self {
         let (tx, rx) = channel();
         // Automatically check for updates on startup
         updater::spawn_update_check(tx.clone());
+
+        let icon_bytes = include_bytes!("../assets/icon.png");
+        let image = image::load_from_memory(icon_bytes)
+            .expect("Failed to load icon PNG")
+            .to_rgba8();
+        let size = [image.width() as usize, image.height() as usize];
+        let pixels = image.into_raw();
+        let color_image = egui::ColorImage::from_rgba_unmultiplied(size, &pixels);
+        let icon_texture = cc.egui_ctx.load_texture(
+            "epod_app_icon",
+            color_image,
+            egui::TextureOptions::NEAREST,
+        );
 
         Self {
             update_status: UpdateStatus::Checking,
             update_tx: tx,
             update_rx: rx,
+            icon_texture,
         }
     }
 
@@ -56,24 +71,39 @@ impl eframe::App for EpodApp {
 
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.vertical_centered(|ui| {
-                // Header Area
-                ui.add_space(8.0);
-                ui.heading(RichText::new("Epod").size(24.0).strong());
-                let short_sha = if updater::CURRENT_COMMIT_SHA.len() >= 7 {
-                    &updater::CURRENT_COMMIT_SHA[..7]
-                } else {
-                    updater::CURRENT_COMMIT_SHA
-                };
-                ui.label(
-                    RichText::new(format!(
-                        "v{} ({})",
-                        env!("CARGO_PKG_VERSION"),
-                        short_sha
-                    ))
-                    .color(Color32::from_gray(140))
-                    .size(12.0),
-                );
+                // Header Area with Retro Pixelated Epod Branding
                 ui.add_space(10.0);
+                ui.horizontal(|ui| {
+                    ui.add_space((ui.available_width() - 150.0).max(0.0) / 2.0);
+                    ui.add(
+                        egui::Image::from_texture(&self.icon_texture)
+                            .fit_to_exact_size(Vec2::new(36.0, 36.0)),
+                    );
+                    ui.add_space(8.0);
+                    ui.vertical(|ui| {
+                        ui.heading(
+                            RichText::new("Epod")
+                                .size(24.0)
+                                .strong()
+                                .color(Color32::from_rgb(235, 240, 250)),
+                        );
+                        let short_sha = if updater::CURRENT_COMMIT_SHA.len() >= 7 {
+                            &updater::CURRENT_COMMIT_SHA[..7]
+                        } else {
+                            updater::CURRENT_COMMIT_SHA
+                        };
+                        ui.label(
+                            RichText::new(format!(
+                                "v{} ({})",
+                                env!("CARGO_PKG_VERSION"),
+                                short_sha
+                            ))
+                            .color(Color32::from_gray(140))
+                            .size(11.0),
+                        );
+                    });
+                });
+                ui.add_space(12.0);
 
                 // Auto-updater status banner/card
                 self.render_update_card(ui);
@@ -330,12 +360,26 @@ impl EpodApp {
     }
 }
 
+fn load_app_icon() -> egui::IconData {
+    let icon_bytes = include_bytes!("../assets/icon.png");
+    let image = image::load_from_memory(icon_bytes)
+        .expect("Failed to load icon PNG")
+        .to_rgba8();
+    let (width, height) = image.dimensions();
+    egui::IconData {
+        rgba: image.into_raw(),
+        width,
+        height,
+    }
+}
+
 fn main() -> eframe::Result<()> {
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([420.0, 680.0])
             .with_min_inner_size([360.0, 520.0])
-            .with_title("Epod"),
+            .with_title("Epod")
+            .with_icon(load_app_icon()),
         ..Default::default()
     };
 

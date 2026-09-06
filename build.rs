@@ -23,4 +23,13 @@ fn main() {
     });
 
     println!("cargo:rustc-env=EPOD_COMMIT_SHA={}", sha);
+
+    #[cfg(windows)]
+    {
+        if std::path::Path::new("assets/icon.ico").exists() {
+            let mut res = winres::WindowsResource::new();
+            res.set_icon("assets/icon.ico");
+            let _ = res.compile();
+        }
+    }
 }

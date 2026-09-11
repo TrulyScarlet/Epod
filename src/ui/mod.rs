@@ -30,6 +30,7 @@ pub struct EpodUi {
     pub art_cache: ArtCache,
     pub discord_rpc: DiscordRpc,
     pub pixel_texture: Option<(ChassisColor, CustomThemeConfig, egui::TextureHandle)>,
+    pub online_lyrics: crate::online_lyrics::OnlineLyricsService,
     last_discord_snapshot: Option<DiscordSnapshot>,
     metadata_repair_receiver: Option<Receiver<MetadataRepairResult>>,
     metadata_repair_count: usize,
@@ -86,6 +87,7 @@ impl EpodUi {
             art_cache: ArtCache::new(),
             discord_rpc: DiscordRpc::new(discord_enabled, discord_mode, client_id),
             pixel_texture: None,
+            online_lyrics: crate::online_lyrics::OnlineLyricsService::new(),
             last_discord_snapshot: None,
             metadata_repair_receiver: None,
             metadata_repair_count: 0,
@@ -104,10 +106,13 @@ impl EpodUi {
     ) {
         state.update_timers(dt);
 
+        // Central online lyrics background service poll
+        self.online_lyrics.poll(state, library, player);
+
         if state.metadata_repair_requested && self.metadata_repair_receiver.is_none() {
             state.metadata_repair_requested = false;
             self.metadata_repair_count = 0;
-            self.metadata_repair_receiver = Some(start_metadata_repair(&library.songs));
+            self.metadata_repair_receiver = Some(start_metadata_repair(&library.songs, state.online_lyrics_enabled_flag.clone()));
             state.set_status_message("Repairing missing metadata…", 3.0);
         }
         if let Some(receiver) = self.metadata_repair_receiver.take() {
@@ -120,8 +125,10 @@ impl EpodUi {
                             if let Some(album) = result.album { song.album = album; }
                             if let Some(art) = result.artwork_bytes { song.artwork_bytes = Some(art); }
                             if let Some(lyrics) = result.lyrics {
-                                song.parsed_lyrics = crate::audio::metadata::parse_lrc_or_plain_lyrics(&lyrics);
-                                song.lyrics = Some(lyrics);
+                                if state.online_lyrics_enabled {
+                                    song.parsed_lyrics = crate::audio::metadata::parse_lrc_or_plain_lyrics(&lyrics);
+                                    song.lyrics = Some(lyrics);
+                                }
                             }
                             self.metadata_repair_count += 1;
                         }
@@ -1490,8 +1497,10 @@ fn handle_screen_item_clicked(
             handle_select_click(state, library, player, video_player);
         }
         ScreenView::SettingsMenu => {
-            state.set_selected_index("settings_menu", clicked_row);
-            handle_select_click(state, library, player, video_player);
+            if clicked_row < 18 {
+                state.set_selected_index("settings_menu", clicked_row);
+                handle_select_click(state, library, player, video_player);
+            }
         }
         ScreenView::SoftwareUpdate => {
             handle_select_click(state, library, player, video_player);
@@ -2440,7 +2449,7 @@ fn handle_wheel_rotary(
             video_player.seek((delta as f32) * 5.0_f32);
         }
         ScreenView::SettingsMenu => {
-            state.move_selection("settings_menu", delta, 17);
+            state.move_selection("settings_menu", delta, 18);
         }
         ScreenView::SoftwareUpdate => {}
         ScreenView::DiscordSettings => {
@@ -3267,10 +3276,19 @@ fn handle_select_click(
                     state.save_settings(player);
                 }
                 15 => {
+                    state.toggle_online_lyrics_enabled();
+                    state.save_settings(player);
+                    if state.online_lyrics_enabled {
+                        state.set_status_message("Online Lyrics: On (Sends title, artist, album, duration to LRCLIB)", 3.5);
+                    } else {
+                        state.set_status_message("Online Lyrics: Off (No network requests)", 2.0);
+                    }
+                }
+                16 => {
                     state.metadata_repair_requested = true;
                     state.set_status_message("Starting metadata repair…", 2.0);
                 }
-                16 => {
+                17 => {
                     player.shuffle = ShuffleMode::Off;
                     player.repeat = RepeatMode::Off;
                     player.sound_check = false;
@@ -3284,6 +3302,7 @@ fn handle_select_click(
                     state.brightness_percent = 85;
                     state.discord_enabled = true;
                     state.discord_display_mode = DiscordDisplayMode::SongAndArtist;
+                    state.set_online_lyrics_enabled(false);
                     state.save_settings(player);
                     state.set_status_message("Settings Reset", 2.0_f32);
                 }
@@ -3645,5 +3664,129 @@ fn handle_track_finished(state: &mut AppState, library: &mut Library, player: &m
                 player.stop();
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::audio::clicker::ClickerAudio;
+
+    #[test]
+    fn test_settings_menu_rotary_and_dispatch() {
+        let mut state = AppState::new();
+        let mut library = Library::new();
+        let mut player = AudioPlayer::new();
+        let mut video_player = VideoPlayer::new();
+
+        state.push_view(ScreenView::SettingsMenu);
+        assert_eq!(state.get_selected_index("settings_menu"), 0);
+
+        // Advance 15 positions to reach Online Lyrics (item 15)
+        for _ in 0..15 {
+            handle_wheel_action(
+                WheelAction::Tick(1),
+                &mut state,
+                &mut library,
+                &mut player,
+                &mut video_player,
+            );
+        }
+        assert_eq!(state.get_selected_index("settings_menu"), 15);
+
+        // Initially disabled
+        assert!(!state.online_lyrics_enabled);
+
+        // Select it (toggle ON)
+        handle_wheel_action(
+            WheelAction::Click(WheelButton::Select),
+            &mut state,
+            &mut library,
+            &mut player,
+            &mut video_player,
+        );
+        assert!(state.online_lyrics_enabled);
+        assert!(state.status_message.as_ref().map(|(msg, _)| msg.contains("Online Lyrics: On")).unwrap_or(false));
+        assert!(state.status_message.as_ref().map(|(msg, _)| msg.contains("Sends title, artist, album, duration to LRCLIB")).unwrap_or(false));
+
+        // Select again (toggle OFF)
+        handle_wheel_action(
+            WheelAction::Click(WheelButton::Select),
+            &mut state,
+            &mut library,
+            &mut player,
+            &mut video_player,
+        );
+        assert!(!state.online_lyrics_enabled);
+        assert!(state.status_message.as_ref().map(|(msg, _)| msg.contains("Online Lyrics: Off")).unwrap_or(false));
+
+        // Advance 2 more positions to reach Reset All Settings (item 17)
+        for _ in 0..2 {
+            handle_wheel_action(
+                WheelAction::Tick(1),
+                &mut state,
+                &mut library,
+                &mut player,
+                &mut video_player,
+            );
+        }
+        assert_eq!(state.get_selected_index("settings_menu"), 17);
+
+        // Turn online lyrics back ON first
+        state.set_online_lyrics_enabled(true);
+        assert!(state.online_lyrics_enabled);
+
+        // Trigger Reset All Settings
+        handle_wheel_action(
+            WheelAction::Click(WheelButton::Select),
+            &mut state,
+            &mut library,
+            &mut player,
+            &mut video_player,
+        );
+        assert!(!state.online_lyrics_enabled, "Reset all settings must restore online lyrics to disabled default");
+
+        // Advance 1 more tick: clamps at 17 (last item)
+        handle_wheel_action(
+            WheelAction::Tick(1),
+            &mut state,
+            &mut library,
+            &mut player,
+            &mut video_player,
+        );
+        assert_eq!(state.get_selected_index("settings_menu"), 17, "Settings menu clamps at last item (index 17)");
+
+        // Tick backwards 17 times to return to 0
+        for _ in 0..17 {
+            handle_wheel_action(
+                WheelAction::Tick(-1),
+                &mut state,
+                &mut library,
+                &mut player,
+                &mut video_player,
+            );
+        }
+        assert_eq!(state.get_selected_index("settings_menu"), 0, "Settings menu clamps at first item (index 0)");
+    }
+
+    #[test]
+    fn test_handle_screen_item_clicked_bounds_and_lyrics_toggle() {
+        let mut state = AppState::new();
+        let mut library = Library::new();
+        let mut player = AudioPlayer::new();
+        let mut video_player = VideoPlayer::new();
+        let clicker = ClickerAudio::new();
+
+        state.push_view(ScreenView::SettingsMenu);
+        assert!(!state.online_lyrics_enabled);
+
+        // Direct click on row 15 (Online Lyrics)
+        handle_screen_item_clicked(15, &mut state, &mut library, &mut player, &mut video_player, &clicker);
+        assert_eq!(state.get_selected_index("settings_menu"), 15);
+        assert!(state.online_lyrics_enabled);
+
+        // Direct click out of bounds (row 18+) should not trigger dispatch or panic
+        handle_screen_item_clicked(18, &mut state, &mut library, &mut player, &mut video_player, &clicker);
+        assert_eq!(state.get_selected_index("settings_menu"), 15);
     }
 }

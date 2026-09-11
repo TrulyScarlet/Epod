@@ -4,6 +4,7 @@ mod audio;
 mod discord;
 mod library;
 mod metadata_fetcher;
+mod online_lyrics;
 mod state;
 mod stats;
 mod theme;

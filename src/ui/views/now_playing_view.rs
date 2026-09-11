@@ -459,14 +459,104 @@ fn render_lyrics_view(
     scale: f32,
 ) {
     if song.parsed_lyrics.is_empty() {
-        painter.text(
-            rect.center(),
-            egui::Align2::CENTER_CENTER,
-            "No Lyrics Available",
-            FontId::proportional(13.0_f32 * scale),
-            LcdPalette::text_secondary(is_dark),
-        );
+        let (title_text, subtitle_text, sub_color) = match state.online_lyrics_status {
+            crate::online_lyrics::OnlineLyricsStatus::Fetching => (
+                "Fetching Lyrics…",
+                "Connecting to LRCLIB",
+                if is_dark { Color32::from_rgb(110, 180, 255) } else { Color32::from_rgb(30, 120, 230) },
+            ),
+            crate::online_lyrics::OnlineLyricsStatus::NotFound => (
+                "No Lyrics Found",
+                "No match on LRCLIB",
+                LcdPalette::text_secondary(is_dark),
+            ),
+            crate::online_lyrics::OnlineLyricsStatus::Error => (
+                "Lyrics Offline",
+                "Network connection error",
+                if is_dark { Color32::from_rgb(255, 160, 100) } else { Color32::from_rgb(220, 90, 40) },
+            ),
+            crate::online_lyrics::OnlineLyricsStatus::Disabled => (
+                "No Lyrics Available",
+                "Online lyrics disabled in Settings",
+                LcdPalette::text_secondary(is_dark),
+            ),
+            crate::online_lyrics::OnlineLyricsStatus::Idle | crate::online_lyrics::OnlineLyricsStatus::Ready => (
+                "No Lyrics Available",
+                "",
+                LcdPalette::text_secondary(is_dark),
+            ),
+        };
+
+        let center = rect.center();
+        if subtitle_text.is_empty() {
+            painter.text(
+                center,
+                egui::Align2::CENTER_CENTER,
+                title_text,
+                FontId::proportional(13.0_f32 * scale),
+                LcdPalette::text_secondary(is_dark),
+            );
+        } else {
+            painter.text(
+                Pos2::new(center.x, center.y - 7.0_f32 * scale),
+                egui::Align2::CENTER_CENTER,
+                title_text,
+                FontId::proportional(13.0_f32 * scale),
+                if is_dark { Color32::from_rgb(240, 242, 248) } else { LcdPalette::TEXT_BLACK },
+            );
+            painter.text(
+                Pos2::new(center.x, center.y + 11.0_f32 * scale),
+                egui::Align2::CENTER_CENTER,
+                subtitle_text,
+                FontId::proportional(10.0_f32 * scale),
+                sub_color,
+            );
+        }
         return;
+    }
+
+    // When lyrics ARE present:
+    // Distinguish fetching, no match, offline/error without obscuring existing lyrics.
+    let status_badge = match state.online_lyrics_status {
+        crate::online_lyrics::OnlineLyricsStatus::Fetching => Some((
+            "LRCLIB: Fetching…",
+            if is_dark { Color32::from_rgb(110, 180, 255) } else { Color32::from_rgb(30, 120, 230) },
+        )),
+        crate::online_lyrics::OnlineLyricsStatus::NotFound => Some((
+            "LRCLIB: No match",
+            LcdPalette::text_secondary(is_dark),
+        )),
+        crate::online_lyrics::OnlineLyricsStatus::Error => Some((
+            "LRCLIB: Offline",
+            if is_dark { Color32::from_rgb(255, 160, 100) } else { Color32::from_rgb(220, 90, 40) },
+        )),
+        _ => None,
+    };
+
+    if let Some((badge_text, badge_color)) = status_badge {
+        let badge_h = 13.0_f32 * scale;
+        let badge_w = 90.0_f32 * scale;
+        let badge_rect = Rect::from_center_size(
+            Pos2::new(rect.center().x, rect.min.y + 7.0_f32 * scale),
+            Vec2::new(badge_w, badge_h),
+        );
+        painter.rect_filled(
+            badge_rect,
+            3.0_f32 * scale,
+            if is_dark { Color32::from_black_alpha(180) } else { Color32::from_black_alpha(150) },
+        );
+        painter.rect_stroke(
+            badge_rect,
+            3.0_f32 * scale,
+            Stroke::new(0.5_f32 * scale, Color32::from_white_alpha(40)),
+        );
+        painter.text(
+            badge_rect.center(),
+            egui::Align2::CENTER_CENTER,
+            badge_text,
+            FontId::proportional(8.0_f32 * scale),
+            badge_color,
+        );
     }
 
     let line_h = 24.0_f32 * scale;
@@ -495,7 +585,9 @@ fn render_lyrics_view(
         let rel_idx = (i as i32) - (active_idx as i32);
         let y = center_y + (rel_idx as f32) * line_h + state.lyrics_scroll_offset;
 
-        if y >= rect.min.y - 10.0_f32 * scale && y <= rect.max.y + 10.0_f32 * scale {
+        // Clip lyrics rendering bounds so they never overlap the top status badge
+        // or the bottom Shuffle/Repeat buttons
+        if y >= rect.min.y + 16.0_f32 * scale && y <= rect.max.y - 24.0_f32 * scale {
             let is_active = i == active_idx;
             let font = if is_active {
                 FontId::proportional(13.0_f32 * scale)

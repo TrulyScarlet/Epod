@@ -8,24 +8,11 @@ use egui::{Color32, FontId, Painter, Pos2, Rect, Stroke, Vec2};
 pub struct SettingsView;
 
 impl SettingsView {
-    pub fn render_settings_menu(
-        painter: &Painter,
-        screen_rect: Rect,
+    pub fn settings_menu_items(
         state: &AppState,
-        _library: &Library,
+        library: &Library,
         player: &AudioPlayer,
-    ) {
-        let is_dark = state.display_theme.is_dark();
-        let scale = (screen_rect.width() / 333.0_f32).max(0.2_f32);
-        let update_available = matches!(state.update_status, crate::updater::UpdateStatus::UpdateAvailable { .. });
-        LcdRenderer::draw_status_bar_with_update(painter, screen_rect, "Settings", player, state.is_hold_locked, state.display_theme, update_available);
-
-        let bar_h = 20.0_f32 * scale;
-        let content_rect = Rect::from_min_max(
-            Pos2::new(screen_rect.min.x, screen_rect.min.y + bar_h),
-            screen_rect.max,
-        );
-
+    ) -> Vec<(&'static str, Option<String>, bool)> {
         let update_badge_text = match &state.update_status {
             crate::updater::UpdateStatus::UpdateAvailable { .. } => "Update Available!",
             crate::updater::UpdateStatus::Checking => "Checking...",
@@ -35,8 +22,19 @@ impl SettingsView {
             _ => "Up to date",
         };
 
-        let sources_detail = format!("{} folders", _library.music_sources.len());
-        let items: Vec<(&str, Option<String>, bool)> = vec![
+        let sources_detail = format!("{} folders", library.music_sources.len());
+        let repair_detail = if state.online_lyrics_enabled {
+            "Art • Artist • Lyrics"
+        } else {
+            "Art • Artist"
+        };
+        let online_lyrics_detail = if state.online_lyrics_enabled {
+            "On (LRCLIB)"
+        } else {
+            "Off (LRCLIB)"
+        };
+
+        vec![
             ("Software Update", Some(update_badge_text.to_string()), true),
             ("About", None, true),
             ("Music Sources", Some(sources_detail), true),
@@ -52,9 +50,31 @@ impl SettingsView {
             ("Brightness", None, true),
             ("Theme", None, true),
             ("Crossfade", Some(if player.crossfade_seconds == 0 { "Off".to_string() } else { format!("{} Seconds", player.crossfade_seconds) }), false),
-            ("Repair Missing Metadata", Some("Art • Artist • Lyrics".to_string()), false),
+            ("Online Lyrics", Some(online_lyrics_detail.to_string()), false),
+            ("Repair Missing Metadata", Some(repair_detail.to_string()), false),
             ("Reset All Settings", None, false),
-        ];
+        ]
+    }
+
+    pub fn render_settings_menu(
+        painter: &Painter,
+        screen_rect: Rect,
+        state: &AppState,
+        library: &Library,
+        player: &AudioPlayer,
+    ) {
+        let is_dark = state.display_theme.is_dark();
+        let scale = (screen_rect.width() / 333.0_f32).max(0.2_f32);
+        let update_available = matches!(state.update_status, crate::updater::UpdateStatus::UpdateAvailable { .. });
+        LcdRenderer::draw_status_bar_with_update(painter, screen_rect, "Settings", player, state.is_hold_locked, state.display_theme, update_available);
+
+        let bar_h = 20.0_f32 * scale;
+        let content_rect = Rect::from_min_max(
+            Pos2::new(screen_rect.min.x, screen_rect.min.y + bar_h),
+            screen_rect.max,
+        );
+
+        let items = Self::settings_menu_items(state, library, player);
 
         let selected_idx = state.get_selected_index("settings_menu").min(items.len() - 1);
         let item_h = 22.0_f32 * scale;
@@ -65,6 +85,8 @@ impl SettingsView {
         } else {
             0
         };
+
+        let pointer_pos = painter.ctx().input(|i| i.pointer.hover_pos());
 
         for i in 0..visible_count {
             let item_idx = scroll_offset + i;
@@ -87,6 +109,20 @@ impl SettingsView {
                 item_idx == selected_idx,
                 is_dark,
             );
+
+            // Hover tooltip on the Online Lyrics row (LRCLIB disclosure)
+            if item_idx == 15 {
+                if let Some(pos) = pointer_pos {
+                    if item_rect.contains(pos) {
+                        egui::show_tooltip_text(
+                            painter.ctx(),
+                            painter.layer_id(),
+                            egui::Id::new("online_lyrics_tooltip"),
+                            "LRCLIB: sends title, artist, album, duration when enabled",
+                        );
+                    }
+                }
+            }
         }
 
         if items.len() > visible_count {
@@ -95,6 +131,32 @@ impl SettingsView {
             let thumb_h = (content_rect.height() * (visible_count as f32 / items.len() as f32)).max(12.0_f32 * scale);
             let thumb_y = content_rect.min.y + (content_rect.height() - thumb_h) * (scroll_offset as f32 / (items.len() - visible_count) as f32);
             painter.rect_filled(Rect::from_min_size(Pos2::new(bar_x, thumb_y), Vec2::new(bar_w, thumb_h)), 2.0_f32 * scale, Color32::from_rgb(180, 185, 195));
+        }
+
+        // Distinct on-screen disclosure pill when 'Online Lyrics' is selected in menu
+        if selected_idx == 15 {
+            let disc_h = 16.0_f32 * scale;
+            let disc_rect = Rect::from_min_max(
+                Pos2::new(content_rect.min.x + 6.0_f32 * scale, content_rect.max.y - disc_h - 2.0_f32 * scale),
+                Pos2::new(content_rect.max.x - 10.0_f32 * scale, content_rect.max.y - 2.0_f32 * scale),
+            );
+            painter.rect_filled(
+                disc_rect,
+                3.0_f32 * scale,
+                if is_dark { Color32::from_black_alpha(220) } else { Color32::from_black_alpha(190) },
+            );
+            painter.rect_stroke(
+                disc_rect,
+                3.0_f32 * scale,
+                Stroke::new(0.7_f32 * scale, Color32::from_white_alpha(50)),
+            );
+            painter.text(
+                disc_rect.center(),
+                egui::Align2::CENTER_CENTER,
+                "LRCLIB: sends title, artist, album, duration when enabled",
+                FontId::proportional(8.5_f32 * scale),
+                Color32::WHITE,
+            );
         }
     }
 
@@ -1690,5 +1752,56 @@ impl SettingsView {
             FontId::proportional(11.0_f32 * scale),
             LcdPalette::text_primary(is_dark),
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_settings_menu_items_mapping_and_counts() {
+        let mut state = AppState::new();
+        let library = Library::new();
+        let player = AudioPlayer::new();
+
+        // Ensure default is disabled
+        assert!(!state.online_lyrics_enabled);
+
+        let items = SettingsView::settings_menu_items(&state, &library, &player);
+        assert_eq!(items.len(), 18, "Settings menu must have exactly 18 items");
+
+        // Index 15 is Online Lyrics toggle marked LRCLIB
+        assert_eq!(items[15].0, "Online Lyrics");
+        assert_eq!(items[15].1, Some("Off (LRCLIB)".to_string()));
+        assert!(!items[15].2); // No arrow, inline toggle
+
+        // Index 16 is Repair Missing Metadata; must NOT promise lyrics when disabled
+        assert_eq!(items[16].0, "Repair Missing Metadata");
+        assert_eq!(items[16].1, Some("Art • Artist".to_string()));
+
+        // Index 17 is Reset All Settings
+        assert_eq!(items[17].0, "Reset All Settings");
+
+        // Toggle online lyrics on
+        state.toggle_online_lyrics_enabled();
+        assert!(state.online_lyrics_enabled);
+
+        let items_enabled = SettingsView::settings_menu_items(&state, &library, &player);
+        assert_eq!(items_enabled.len(), 18);
+        assert_eq!(items_enabled[15].0, "Online Lyrics");
+        assert_eq!(items_enabled[15].1, Some("On (LRCLIB)".to_string()));
+
+        // When enabled, repair metadata includes Lyrics
+        assert_eq!(items_enabled[16].0, "Repair Missing Metadata");
+        assert_eq!(items_enabled[16].1, Some("Art • Artist • Lyrics".to_string()));
+
+        // Toggle back off
+        state.toggle_online_lyrics_enabled();
+        assert!(!state.online_lyrics_enabled);
+
+        let items_disabled = SettingsView::settings_menu_items(&state, &library, &player);
+        assert_eq!(items_disabled[15].1, Some("Off (LRCLIB)".to_string()));
+        assert_eq!(items_disabled[16].1, Some("Art • Artist".to_string()));
     }
 }

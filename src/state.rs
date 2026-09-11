@@ -297,6 +297,8 @@ pub struct EpodSettingsConfig {
     #[serde(default = "default_album_brightness")]
     pub album_art_brightness: u8,
     #[serde(default)]
+    pub online_lyrics_enabled: bool,
+    #[serde(default)]
     pub quiz_high_score: u32,
 }
 
@@ -338,6 +340,7 @@ impl Default for EpodSettingsConfig {
             discord_client_id: Some("1540631275717656648".to_string()),
             album_art_blur: 15,
             album_art_brightness: 65,
+            online_lyrics_enabled: false,
             quiz_high_score: 0,
         }
     }
@@ -379,6 +382,9 @@ pub struct AppState {
     pub discord_client_id: String,
     pub album_art_blur: u8,
     pub album_art_brightness: u8,
+    pub online_lyrics_enabled: bool,
+    pub online_lyrics_enabled_flag: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    pub online_lyrics_status: crate::online_lyrics::OnlineLyricsStatus,
     
     // UI Popups & Overlays
     pub volume_hud_timer: f32,
@@ -446,6 +452,9 @@ impl AppState {
             discord_client_id: "1540631275717656648".to_string(),
             album_art_blur: 15,
             album_art_brightness: 65,
+            online_lyrics_enabled: false,
+            online_lyrics_enabled_flag: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            online_lyrics_status: crate::online_lyrics::OnlineLyricsStatus::Disabled,
             
             volume_hud_timer: 0.0,
             alphabet_hud_timer: 0.0,
@@ -511,6 +520,7 @@ impl AppState {
                         }
                         self.album_art_blur = cfg.album_art_blur;
                         self.album_art_brightness = cfg.album_art_brightness;
+                        self.set_online_lyrics_enabled(cfg.online_lyrics_enabled);
                         self.music_quiz.high_score = cfg.quiz_high_score;
                         
                         player.volume = cfg.volume;
@@ -529,6 +539,12 @@ impl AppState {
     }
 
     pub fn save_settings(&self, player: &AudioPlayer) {
+        #[cfg(test)]
+        {
+            let _ = player;
+            return;
+        }
+        #[allow(unreachable_code)]
         let cfg = EpodSettingsConfig {
             chassis_color: self.chassis_color,
             custom_theme: self.custom_theme.clone(),
@@ -553,6 +569,7 @@ impl AppState {
             discord_client_id: Some(self.discord_client_id.clone()),
             album_art_blur: self.album_art_blur,
             album_art_brightness: self.album_art_brightness,
+            online_lyrics_enabled: self.online_lyrics_enabled,
             quiz_high_score: self.music_quiz.high_score,
         };
         if let Ok(exe) = std::env::current_exe() {
@@ -566,6 +583,27 @@ impl AppState {
         if let Ok(file) = std::fs::File::create("epod_settings.json") {
             let _ = serde_json::to_writer_pretty(file, &cfg);
         }
+    }
+
+    pub fn set_online_lyrics_enabled(&mut self, enabled: bool) {
+        self.online_lyrics_enabled = enabled;
+        self.online_lyrics_enabled_flag
+            .store(enabled, std::sync::atomic::Ordering::Relaxed);
+        if !enabled {
+            self.online_lyrics_status = crate::online_lyrics::OnlineLyricsStatus::Disabled;
+        } else if self.online_lyrics_status == crate::online_lyrics::OnlineLyricsStatus::Disabled {
+            self.online_lyrics_status = crate::online_lyrics::OnlineLyricsStatus::Idle;
+        }
+    }
+
+    #[allow(dead_code)]
+    pub fn toggle_online_lyrics_enabled(&mut self) {
+        self.set_online_lyrics_enabled(!self.online_lyrics_enabled);
+    }
+
+    #[allow(dead_code)]
+    pub fn online_lyrics_status(&self) -> crate::online_lyrics::OnlineLyricsStatus {
+        self.online_lyrics_status
     }
 
     pub fn get_active_main_menu_items(&self, player: &AudioPlayer) -> Vec<MainMenuItem> {
